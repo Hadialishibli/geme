@@ -1,11 +1,12 @@
 import pygame
 import json
+import math
 
 # --- Editor Settings ---
 SCREEN_WIDTH = 1024
 SCREEN_HEIGHT = 768
-TILE_SIZE = 64
-EDITOR_FPS = 30
+INITIAL_TILE_SIZE = 64
+EDITOR_FPS = 60
 
 # Colors for visualization
 WHITE = (255, 255, 255)
@@ -21,6 +22,7 @@ PURPLE = (128, 0, 128) # For keys
 ORANGE = (255, 165, 0) # For doors
 DARK_BLUE = (0, 0, 100) # For menu background
 LIGHT_BLUE = (100, 100, 255) # For menu highlight
+GRID_COLOR = (40, 40, 40) # Darker grid lines
 
 # --- Helper Functions ---
 def load_level_data(filename):
@@ -28,42 +30,37 @@ def load_level_data(filename):
     try:
         with open(filename, 'r') as f:
             data = json.load(f)
-            # Ensure new lists exist, or initialize them if not present
+            # Ensure all object lists exist
+            data.setdefault("player_spawn", {"x": 1, "y": 1})
+            data.setdefault("walls", [])
+            data.setdefault("pots", [])
+            data.setdefault("enemies", [])
             data.setdefault("merchants", [])
             data.setdefault("doors", [])
             data.setdefault("keys", [])
             return data
-    except FileNotFoundError:
-        print(f"Warning: Level file '{filename}' not found. Creating a new one.")
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"Warning: Level file '{filename}' not found or invalid. Creating a new one.")
         return {
-            "map_width": 30,
-            "map_height": 20,
             "player_spawn": {"x": 1, "y": 1},
             "walls": [],
             "pots": [],
             "enemies": [],
-            "merchants": [], # New: Initialize merchants list
-            "doors": [],     # New: Initialize doors list
-            "keys": []       # New: Initialize keys list
-        }
-    except json.JSONDecodeError:
-        print(f"Error: Could not parse '{filename}'. Check for syntax errors. Creating a new one.")
-        return {
-            "map_width": 30,
-            "map_height": 20,
-            "player_spawn": {"x": 1, "y": 1},
-            "walls": [],
-            "pots": [],
-            "enemies": [],
-            "merchants": [], # New: Initialize merchants list
-            "doors": [],     # New: Initialize doors list
-            "keys": []       # New: Initialize keys list
+            "merchants": [],
+            "doors": [],
+            "keys": []
         }
 
 def save_level_data(filename, data):
     """Saves level data to a JSON file."""
+    # Create a copy to avoid modifying the original dict while iterating
+    data_to_save = data.copy()
+    # Remove obsolete map size keys if they exist
+    data_to_save.pop("map_width", None)
+    data_to_save.pop("map_height", None)
+    
     with open(filename, 'w') as f:
-        json.dump(data, f, indent=4)
+        json.dump(data_to_save, f, indent=4)
     print(f"Level data saved to '{filename}'.")
 
 # --- Editor Class ---
@@ -71,266 +68,264 @@ class LevelEditor:
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("Level Editor")
+        pygame.display.set_caption("Infinite Level Editor")
         self.clock = pygame.time.Clock()
         self.running = True
-
         self.font = pygame.font.Font(None, 30)
 
         self.level_data = load_level_data("level.json")
-        self.map_width_pixels = self.level_data['map_width'] * TILE_SIZE
-        self.map_height_pixels = self.level_data['map_height'] * TILE_SIZE
 
+        # Camera and Zoom
         self.camera_x = 0
         self.camera_y = 0
+        self.zoom_level = 1.0
+        self.min_zoom = 0.1
+        self.max_zoom = 5.0
+        self.current_tile_size = INITIAL_TILE_SIZE * self.zoom_level
 
-        self.tools = ['wall', 'pot', 'enemy', 'player', 'merchant', 'door', 'key', 'erase'] # MODIFIED: Added 'key'
-        self.selected_tool_index = 0
-        self.selected_tool = self.tools[self.selected_tool_index]
+        # Tools
+        self.tools = ['wall', 'pot', 'enemy', 'player', 'merchant', 'door', 'key', 'erase']
+        self.selected_tool = self.tools[0]
 
-        self.menu_open = False # New: State for menu
-        self.menu_items = ['wall', 'pot', 'enemy', 'player', 'merchant', 'door', 'key', 'erase'] # MODIFIED: Added 'key'
+        # Menu
+        self.menu_open = False
+        self.menu_items = self.tools
         self.menu_selection_index = 0
+
+    def screen_to_world(self, sx, sy):
+        """Converts screen coordinates to world coordinates, considering camera and zoom."""
+        wx = (sx - self.camera_x) / self.zoom_level
+        wy = (sy - self.camera_y) / self.zoom_level
+        return wx, wy
+
+    def world_to_screen(self, wx, wy):
+        """Converts world coordinates to screen coordinates."""
+        sx = wx * self.zoom_level + self.camera_x
+        sy = wy * self.zoom_level + self.camera_y
+        return sx, sy
+        
+    def get_tile_coords_from_mouse(self):
+        """Gets the world grid coordinates (x, y) under the mouse cursor."""
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        world_x, world_y = self.screen_to_world(mouse_x, mouse_y)
+        tile_x = math.floor(world_x / INITIAL_TILE_SIZE)
+        tile_y = math.floor(world_y / INITIAL_TILE_SIZE)
+        return tile_x, tile_y
 
     def handle_input(self):
         """Handles user input for editor controls."""
+        keys = pygame.key.get_pressed()
+        
+        # Pan the camera with arrow keys (if menu is closed)
+        if not self.menu_open:
+            scroll_speed = INITIAL_TILE_SIZE  # Move one tile at a time
+            if keys[pygame.K_LEFT]:
+                self.camera_x += scroll_speed
+            if keys[pygame.K_RIGHT]:
+                self.camera_x -= scroll_speed
+            if keys[pygame.K_UP]:
+                self.camera_y += scroll_speed
+            if keys[pygame.K_DOWN]:
+                self.camera_y -= scroll_speed
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
-            
+
+            # --- Keyboard Input ---
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     self.running = False
                 
-                # New: Menu handling
+                # Toggle Menu
                 if event.key == pygame.K_e:
-                    self.menu_open = not self.menu_open # Toggle menu
-                    self.menu_selection_index = self.tools.index(self.selected_tool) if self.selected_tool in self.tools else 0 # Reset menu selection to current tool
-
+                    self.menu_open = not self.menu_open
+                    if self.menu_open:
+                        self.menu_selection_index = self.tools.index(self.selected_tool)
+                
+                # Menu Navigation
                 if self.menu_open:
                     if event.key == pygame.K_UP:
                         self.menu_selection_index = (self.menu_selection_index - 1) % len(self.menu_items)
                     elif event.key == pygame.K_DOWN:
                         self.menu_selection_index = (self.menu_selection_index + 1) % len(self.menu_items)
-                    elif event.key == pygame.K_RETURN: # Enter key to select
+                    elif event.key == pygame.K_RETURN:
                         self.selected_tool = self.menu_items[self.menu_selection_index]
-                        self.menu_open = False # Close menu after selection
-                else:
-                    # Camera scrolling with arrow keys
-                    if event.key == pygame.K_LEFT:
-                        self.camera_x += TILE_SIZE * 5 # Scroll faster
-                    if event.key == pygame.K_RIGHT:
-                        self.camera_x -= TILE_SIZE * 5
-                    if event.key == pygame.K_UP:
-                        self.camera_y += TILE_SIZE * 5
-                    if event.key == pygame.K_DOWN:
-                        self.camera_y -= TILE_SIZE * 5
+                        self.menu_open = False
+                
+                # Save
+                elif event.key == pygame.K_s:
+                    save_level_data("level.json", self.level_data)
+
+            # --- Mouse Input ---
+            if not self.menu_open:
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    tile_x, tile_y = self.get_tile_coords_from_mouse()
                     
-                    # Clamp camera to map boundaries
-                    self.camera_x = max(min(0, self.camera_x), -(self.map_width_pixels - SCREEN_WIDTH))
-                    self.camera_y = max(min(0, self.map_height_pixels - SCREEN_HEIGHT), self.camera_y) # Fix clamp
-                    self.camera_x = max(min(0, self.camera_x), -(self.map_width_pixels - SCREEN_WIDTH))
-                    self.camera_y = max(min(0, self.camera_y), -(self.map_height_pixels - SCREEN_HEIGHT))
+                    # Place / Erase
+                    if event.button == 1: # Left click
+                        self.place_at_position(tile_x, tile_y)
+                    elif event.button == 3: # Right click
+                        self.erase_at_position(tile_x, tile_y)
+                    
+                    # Zooming with scroll wheel
+                    elif event.button == 4: # Scroll Up
+                        self.zoom(1.1)
+                    elif event.button == 5: # Scroll Down
+                        self.zoom(0.9)
 
-                    # Save functionality
-                    if event.key == pygame.K_s:
-                        save_level_data("level.json", self.level_data)
-            
-            if not self.menu_open and event.type == pygame.MOUSEBUTTONDOWN:
-                mouse_x, mouse_y = event.pos
-                world_x = (mouse_x - self.camera_x) // TILE_SIZE
-                world_y = (mouse_y - self.camera_y) // TILE_SIZE
+    def zoom(self, factor):
+        """Zooms the camera, keeping the mouse position stable."""
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Get world coordinates under mouse before zoom
+        world_before_zoom_x, world_before_zoom_y = self.screen_to_world(*mouse_pos)
+        
+        # Apply zoom
+        self.zoom_level *= factor
+        self.zoom_level = max(self.min_zoom, min(self.max_zoom, self.zoom_level))
+        self.current_tile_size = INITIAL_TILE_SIZE * self.zoom_level
 
-                if event.button == 1: # Left click to place/select
-                    self.place_at_position(world_x, world_y)
-                elif event.button == 3: # Right click to erase
-                    self.erase_at_position(world_x, world_y)
+        # Get world coordinates under mouse after zoom
+        world_after_zoom_x, world_after_zoom_y = self.screen_to_world(*mouse_pos)
+
+        # Adjust camera to keep the world point under the mouse
+        self.camera_x += (world_after_zoom_x - world_before_zoom_x) * self.zoom_level
+        self.camera_y += (world_after_zoom_y - world_before_zoom_y) * self.zoom_level
 
     def place_at_position(self, x, y):
-        """Places an object at the given tile coordinates based on the selected tool."""
-        if not (0 <= x < self.level_data['map_width'] and 0 <= y < self.level_data['map_height']):
-            print("Cannot place outside map boundaries.")
-            return
-
-        # Erase existing objects at this position before placing, if it's not 'erase' tool
-        if self.selected_tool != 'erase':
-            self.erase_at_position(x, y, True) # Erase existing if any before placing new
+        """Places an object at the given tile coordinates."""
+        self.erase_at_position(x, y, quiet=True) # Clear the tile first
 
         if self.selected_tool == 'wall':
-            # Check if a wall already exists at this exact single tile position
-            # This editor places 1x1 walls, so check for intersection with existing walls
-            new_wall = {"x": x, "y": y, "w": 1, "h": 1}
-            # Simple check for existing 1x1 wall at same spot
-            if not any(w['x'] == x and w['y'] == y and w['w'] == 1 and w['h'] == 1 for w in self.level_data['walls']):
-                self.level_data['walls'].append(new_wall)
+            self.level_data['walls'].append({"x": x, "y": y, "w": 1, "h": 1})
         elif self.selected_tool == 'pot':
-            if not any(p['x'] == x and p['y'] == y for p in self.level_data['pots']):
-                self.level_data['pots'].append({"x": x, "y": y})
+            self.level_data['pots'].append({"x": x, "y": y})
         elif self.selected_tool == 'enemy':
-            if not any(e['x'] == x and e['y'] == y for e in self.level_data['enemies']):
-                self.level_data['enemies'].append({"type": "melee", "x": x, "y": y})
+            self.level_data['enemies'].append({"type": "melee", "x": x, "y": y})
         elif self.selected_tool == 'player':
-            # Remove previous player spawn and set new one
             self.level_data['player_spawn'] = {"x": x, "y": y}
-        elif self.selected_tool == 'merchant': # New: Place merchant
-            if not any(m['x'] == x and m['y'] == y for m in self.level_data['merchants']):
-                self.level_data['merchants'].append({"x": x, "y": y})
-        elif self.selected_tool == 'door': # New: Place door
-            if not any(d['x'] == x and d['y'] == y for d in self.level_data['doors']):
-                self.level_data['doors'].append({"x": x, "y": y})
-        elif self.selected_tool == 'key': # MODIFIED: Place key
-            if not any(k['x'] == x and k['y'] == y for k in self.level_data['keys']):
-                self.level_data['keys'].append({"x": x, "y": y})
+        elif self.selected_tool == 'merchant':
+            self.level_data['merchants'].append({"x": x, "y": y})
+        elif self.selected_tool == 'door':
+            self.level_data['doors'].append({"x": x, "y": y})
+        elif self.selected_tool == 'key':
+            self.level_data['keys'].append({"x": x, "y": y})
         elif self.selected_tool == 'erase':
-            self.erase_at_position(x, y) # Call erase directly if 'erase' is selected
+            self.erase_at_position(x, y)
 
-    def erase_at_position(self, x, y, check_only=False):
-        """Erases an object at the given tile coordinates."""
-        erased = False
+    def erase_at_position(self, x, y, quiet=False):
+        """Erases any object at the given tile coordinates."""
+        # A function to check if an object is at the given coordinates
+        def at_coords(obj):
+            return obj['x'] == x and obj['y'] == y
 
-        # Erase wall
-        self.level_data['walls'] = [
-            w for w in self.level_data['walls']
-            if not (w['x'] <= x < w['x'] + w['w'] and w['y'] <= y < w['y'] + w['h'])
-        ]
-        # Erase pot
-        self.level_data['pots'] = [p for p in self.level_data['pots'] if not (p['x'] == x and p['y'] == y)]
-        # Erase enemy
-        self.level_data['enemies'] = [e for e in self.level_data['enemies'] if not (e['x'] == x and e['y'] == y)]
-        # Erase merchant
-        self.level_data['merchants'] = [m for m in self.level_data['merchants'] if not (m['x'] == x and m['y'] == y)]
-        # Erase door
-        self.level_data['doors'] = [d for d in self.level_data['doors'] if not (d['x'] == x and d['y'] == y)]
-        # MODIFIED: Erase key
-        self.level_data['keys'] = [k for k in self.level_data['keys'] if not (k['x'] == x and k['y'] == y)]
-
-
-        # Player spawn is a single point, so it's not 'erased' but rather moved when a new one is placed
-        # or can be set to a default if you want an explicit erase for player spawn.
-        # For now, placing a new player spawn automatically overwrites the old one.
-
-        # If check_only is True, we just modified the list to remove, but don't print "Erased"
-        if not check_only:
+        # Filter out objects at the given coords from each list
+        self.level_data['walls'] = [w for w in self.level_data['walls'] if not at_coords(w)]
+        self.level_data['pots'] = [p for p in self.level_data['pots'] if not at_coords(p)]
+        self.level_data['enemies'] = [e for e in self.level_data['enemies'] if not at_coords(e)]
+        self.level_data['merchants'] = [m for m in self.level_data['merchants'] if not at_coords(m)]
+        self.level_data['doors'] = [d for d in self.level_data['doors'] if not at_coords(d)]
+        self.level_data['keys'] = [k for k in self.level_data['keys'] if not at_coords(k)]
+        
+        if not quiet:
             print(f"Erased content at ({x}, {y})")
 
-
     def draw_grid(self):
-        """Draws the grid lines for the editor."""
-        for x in range(self.level_data['map_width']):
-            pygame.draw.line(self.screen, DARK_BLUE, 
-                             (x * TILE_SIZE + self.camera_x, self.camera_y), 
-                             (x * TILE_SIZE + self.camera_x, self.map_height_pixels + self.camera_y))
-        for y in range(self.level_data['map_height']):
-            pygame.draw.line(self.screen, DARK_BLUE, 
-                             (self.camera_x, y * TILE_SIZE + self.camera_y), 
-                             (self.map_width_pixels + self.camera_x, y * TILE_SIZE + self.camera_y))
+        """Draws a dynamic grid based on camera position and zoom."""
+        # Calculate the visible portion of the world in tile coordinates
+        start_world_x, start_world_y = self.screen_to_world(0, 0)
+        end_world_x, end_world_y = self.screen_to_world(SCREEN_WIDTH, SCREEN_HEIGHT)
 
-    def draw_menu(self):
-        """New: Draws the tool selection menu."""
-        menu_width = 200
-        menu_item_height = 30
-        menu_start_x = SCREEN_WIDTH - menu_width - 10
-        menu_start_y = 10
+        start_tile_x = math.floor(start_world_x / INITIAL_TILE_SIZE)
+        start_tile_y = math.floor(start_world_y / INITIAL_TILE_SIZE)
+        end_tile_x = math.ceil(end_world_x / INITIAL_TILE_SIZE)
+        end_tile_y = math.ceil(end_world_y / INITIAL_TILE_SIZE)
 
-        pygame.draw.rect(self.screen, DARK_BLUE, (menu_start_x, menu_start_y, menu_width, len(self.menu_items) * menu_item_height + 10))
+        # Draw vertical lines
+        for x in range(start_tile_x, end_tile_x):
+            sx1, sy1 = self.world_to_screen(x * INITIAL_TILE_SIZE, start_world_y)
+            sx2, sy2 = self.world_to_screen(x * INITIAL_TILE_SIZE, end_world_y)
+            pygame.draw.line(self.screen, GRID_COLOR, (sx1, sy1), (sx2, sy2))
+
+        # Draw horizontal lines
+        for y in range(start_tile_y, end_tile_y):
+            sx1, sy1 = self.world_to_screen(start_world_x, y * INITIAL_TILE_SIZE)
+            sx2, sy2 = self.world_to_screen(end_world_x, y * INITIAL_TILE_SIZE)
+            pygame.draw.line(self.screen, GRID_COLOR, (sx1, sy1), (sx2, sy2))
+
+    def draw_objects(self):
+        """Draws all the objects from the level data."""
+        ts = self.current_tile_size
         
-        for i, item in enumerate(self.menu_items):
-            item_rect = pygame.Rect(menu_start_x + 5, menu_start_y + 5 + i * menu_item_height, menu_width - 10, menu_item_height)
-            
-            if i == self.menu_selection_index:
-                pygame.draw.rect(self.screen, LIGHT_BLUE, item_rect) # Highlight selected item
+        object_lists = {
+            'walls': (GREY, self.level_data['walls']),
+            'pots': (BROWN, self.level_data['pots']),
+            'enemies': (RED, self.level_data['enemies']),
+            'merchants': (BLUE, self.level_data['merchants']),
+            'doors': (ORANGE, self.level_data['doors']),
+            'keys': (PURPLE, self.level_data['keys']),
+            'player': (GREEN, [self.level_data['player_spawn']])
+        }
 
-            item_text = self.font.render(item.capitalize(), True, WHITE)
-            self.screen.blit(item_text, item_rect.topleft)
+        for obj_type, (color, data_list) in object_lists.items():
+            for obj in data_list:
+                sx, sy = self.world_to_screen(obj['x'] * INITIAL_TILE_SIZE, obj['y'] * INITIAL_TILE_SIZE)
+                # Cull objects that are off-screen
+                if sx > SCREEN_WIDTH or sy > SCREEN_HEIGHT or sx + ts < 0 or sy + ts < 0:
+                    continue
+                
+                rect = pygame.Rect(sx, sy, ts, ts)
+                pygame.draw.rect(self.screen, color, rect)
+
+    def draw_ui(self):
+        """Draws the editor's user interface."""
+        # Tool and instructions
+        tool_text = self.font.render(f"Tool: {self.selected_tool.capitalize()} (E for menu)", True, WHITE)
+        self.screen.blit(tool_text, (10, 10))
+        instructions_text = self.font.render("S: Save, Arrows: Pan, Scroll: Zoom", True, WHITE)
+        self.screen.blit(instructions_text, (10, 40))
+        zoom_text = self.font.render(f"Zoom: {self.zoom_level:.2f}x", True, WHITE)
+        self.screen.blit(zoom_text, (10, 70))
+
+        # Draw menu if open
+        if self.menu_open:
+            menu_width = 200
+            menu_item_height = 30
+            menu_start_x = SCREEN_WIDTH - menu_width - 10
+            menu_start_y = 10
+
+            pygame.draw.rect(self.screen, DARK_BLUE, (menu_start_x, menu_start_y, menu_width, len(self.menu_items) * menu_item_height + 10))
+            
+            for i, item in enumerate(self.menu_items):
+                item_rect = pygame.Rect(menu_start_x + 5, menu_start_y + 5 + i * menu_item_height, menu_width - 10, menu_item_height)
+                
+                if i == self.menu_selection_index:
+                    pygame.draw.rect(self.screen, LIGHT_BLUE, item_rect)
+
+                item_text = self.font.render(item.capitalize(), True, WHITE)
+                self.screen.blit(item_text, (item_rect.x + 5, item_rect.y + 5))
+                
+    def draw_cursor_highlight(self):
+        """Highlights the tile under the cursor."""
+        if self.menu_open:
+            return
+            
+        tile_x, tile_y = self.get_tile_coords_from_mouse()
+        sx, sy = self.world_to_screen(tile_x * INITIAL_TILE_SIZE, tile_y * INITIAL_TILE_SIZE)
+        rect = pygame.Rect(sx, sy, self.current_tile_size, self.current_tile_size)
+        
+        # Determine color based on tool
+        color = CYAN if self.selected_tool != 'erase' else YELLOW
+        pygame.draw.rect(self.screen, color, rect, 3) # Draw a thick border
 
     def draw(self):
         """Draws all elements on the editor screen."""
         self.screen.fill(BLACK)
-        
-        # Draw background tiles (optional, for visual clarity)
-        for x in range(self.level_data['map_width']):
-            for y in range(self.level_data['map_height']):
-                tile_rect = pygame.Rect(x * TILE_SIZE + self.camera_x, y * TILE_SIZE + self.camera_y, TILE_SIZE, TILE_SIZE)
-                pygame.draw.rect(self.screen, (30, 30, 30), tile_rect, 1) # Light grey border
-
-        # Draw walls
-        for wall in self.level_data['walls']:
-            pygame.draw.rect(self.screen, GREY, (wall['x'] * TILE_SIZE + self.camera_x,
-                                                 wall['y'] * TILE_SIZE + self.camera_y,
-                                                 wall['w'] * TILE_SIZE,
-                                                 wall['h'] * TILE_SIZE))
-        # Draw pots
-        for pot in self.level_data['pots']:
-            pygame.draw.rect(self.screen, BROWN, (pot['x'] * TILE_SIZE + self.camera_x,
-                                                  pot['y'] * TILE_SIZE + self.camera_y,
-                                                  TILE_SIZE, TILE_SIZE))
-        # Draw enemies
-        for enemy in self.level_data['enemies']:
-            pygame.draw.rect(self.screen, RED, (enemy['x'] * TILE_SIZE + self.camera_x,
-                                                enemy['y'] * TILE_SIZE + self.camera_y,
-                                                TILE_SIZE, TILE_SIZE))
-        # Draw player spawn
-        player_spawn = self.level_data['player_spawn']
-        pygame.draw.rect(self.screen, GREEN, (player_spawn['x'] * TILE_SIZE + self.camera_x,
-                                              player_spawn['y'] * TILE_SIZE + self.camera_y,
-                                              TILE_SIZE, TILE_SIZE))
-        
-        # New: Draw merchants
-        for merchant in self.level_data['merchants']:
-            pygame.draw.rect(self.screen, BLUE, (merchant['x'] * TILE_SIZE + self.camera_x,
-                                                 merchant['y'] * TILE_SIZE + self.camera_y,
-                                                 TILE_SIZE, TILE_SIZE))
-
-        # New: Draw doors
-        for door in self.level_data['doors']:
-            pygame.draw.rect(self.screen, ORANGE, (door['x'] * TILE_SIZE + self.camera_x,
-                                                  door['y'] * TILE_SIZE + self.camera_y,
-                                                  TILE_SIZE, TILE_SIZE))
-
-        # MODIFIED: Draw keys
-        for key in self.level_data['keys']:
-            pygame.draw.rect(self.screen, PURPLE, (key['x'] * TILE_SIZE + self.camera_x,
-                                                  key['y'] * TILE_SIZE + self.camera_y,
-                                                  TILE_SIZE, TILE_SIZE))
-
         self.draw_grid()
-
-        # Draw highlight for current mouse position (only if menu is not open)
-        if not self.menu_open:
-            mouse_x, mouse_y = pygame.mouse.get_pos()
-            current_tile_x = (mouse_x - self.camera_x) // TILE_SIZE * TILE_SIZE + self.camera_x
-            current_tile_y = (mouse_y - self.camera_y) // TILE_SIZE * TILE_SIZE + self.camera_y
-
-            if 0 <= (mouse_x - self.camera_x) // TILE_SIZE < self.level_data['map_width'] and \
-               0 <= (mouse_y - self.camera_y) // TILE_SIZE < self.level_data['map_height']:
-                if self.selected_tool == 'wall':
-                    pygame.draw.rect(self.screen, CYAN, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3) # Outline
-                elif self.selected_tool == 'pot':
-                    pygame.draw.rect(self.screen, BROWN, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
-                elif self.selected_tool == 'enemy':
-                    pygame.draw.rect(self.screen, RED, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
-                elif self.selected_tool == 'player':
-                    pygame.draw.rect(self.screen, GREEN, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
-                elif self.selected_tool == 'merchant': # New: Draw merchant outline
-                    pygame.draw.rect(self.screen, BLUE, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
-                elif self.selected_tool == 'door': # New: Draw door outline
-                    pygame.draw.rect(self.screen, ORANGE, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
-                elif self.selected_tool == 'key': # MODIFIED: Draw key outline
-                    pygame.draw.rect(self.screen, PURPLE, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
-                elif self.selected_tool == 'erase':
-                    pygame.draw.rect(self.screen, YELLOW, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
-
-
-        # Draw UI text
-        tool_text = self.font.render(f"Tool: {self.selected_tool.capitalize()}", True, WHITE)
-        self.screen.blit(tool_text, (10, 10))
-        # Updated instructions
-        instructions_text = self.font.render("E: Open Menu, S: Save, Arrows: Scroll, Left Click: Place, Right Click: Erase", True, WHITE)
-        self.screen.blit(instructions_text, (10, 40))
-
-        if self.menu_open:
-            self.draw_menu() # Draw menu if open
-
+        self.draw_objects()
+        self.draw_cursor_highlight()
+        self.draw_ui()
         pygame.display.flip()
 
     def run(self):
@@ -345,3 +340,4 @@ if __name__ == '__main__':
     editor = LevelEditor()
     editor.run()
     pygame.quit()
+
