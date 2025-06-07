@@ -17,6 +17,9 @@ BROWN = (139, 69, 19)
 GREY = (128, 128, 128)
 YELLOW = (255, 255, 0)
 CYAN = (0, 255, 255)
+PURPLE = (128, 0, 128) # For merchant
+DARK_BROWN = (101, 67, 33) # For door
+DARK_GREY = (50, 50, 50) # Keep this for grid lines
 
 # --- Helper Functions ---
 def load_level_data(filename):
@@ -27,22 +30,26 @@ def load_level_data(filename):
     except FileNotFoundError:
         print(f"Warning: Level file '{filename}' not found. Creating a new one.")
         return {
-            "map_width": 30,
-            "map_height": 20,
+            "map_width": 50, # Increased initial map size for infinite feeling
+            "map_height": 50, # Increased initial map size
             "player_spawn": {"x": 1, "y": 1},
             "walls": [],
             "pots": [],
-            "enemies": []
+            "enemies": [],
+            "merchants": [], # New: Merchants list
+            "doors": []      # New: Doors list
         }
     except json.JSONDecodeError:
         print(f"Error: Could not parse '{filename}'. Check for syntax errors. Starting with empty data.")
         return {
-            "map_width": 30,
-            "map_height": 20,
+            "map_width": 50, # Increased initial map size for infinite feeling
+            "map_height": 50, # Increased initial map size
             "player_spawn": {"x": 1, "y": 1},
             "walls": [],
             "pots": [],
-            "enemies": []
+            "enemies": [],
+            "merchants": [],
+            "doors": []
         }
 
 def save_level_data(filename, data):
@@ -61,14 +68,16 @@ class LevelEditor:
         self.level_file = level_file
         self.level_data = load_level_data(self.level_file)
 
-        self.map_width_pixels = self.level_data['map_width'] * TILE_SIZE
-        self.map_height_pixels = self.level_data['map_height'] * TILE_SIZE
+        # These define the conceptual boundaries of the initially loaded map data,
+        # but the editor camera can go beyond them.
+        self.initial_map_width_tiles = self.level_data['map_width']
+        self.initial_map_height_tiles = self.level_data['map_height']
 
         self.camera_x = 0
         self.camera_y = 0
 
-        self.selected_tool = 'wall'  # 'wall', 'pot', 'enemy', 'player', 'erase'
-        self.selected_item = None # For moving existing elements
+        self.selected_tool = 'wall'  # 'wall', 'pot', 'enemy', 'player', 'merchant', 'door', 'erase'
+        self.selected_item = None # For moving existing elements (not implemented yet, but good to have)
 
         self.running = True
         self.font = pygame.font.Font(None, 24)
@@ -102,6 +111,12 @@ class LevelEditor:
                 if event.key == pygame.K_4:
                     self.selected_tool = 'player'
                     print("Tool: Player Spawn")
+                if event.key == pygame.K_5: # New hotkey for merchant
+                    self.selected_tool = 'merchant'
+                    print("Tool: Merchant")
+                if event.key == pygame.K_6: # New hotkey for door
+                    self.selected_tool = 'door'
+                    print("Tool: Door")
                 if event.key == pygame.K_e:
                     self.selected_tool = 'erase'
                     print("Tool: Erase")
@@ -110,14 +125,12 @@ class LevelEditor:
 
             if event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_x, mouse_y = event.pos
-                # Convert screen coordinates to map coordinates
+                # Convert screen coordinates to map coordinates (tile grid)
                 map_x = (mouse_x - self.camera_x) // TILE_SIZE
                 map_y = (mouse_y - self.camera_y) // TILE_SIZE
 
                 if event.button == 1:  # Left click
                     if self.selected_tool == 'wall':
-                        # Simple wall placement: 1x1 wall at clicked tile
-                        # For drawing larger walls, you'd need click-and-drag logic
                         new_wall = {"x": int(map_x), "y": int(map_y), "w": 1, "h": 1}
                         if new_wall not in self.level_data['walls']:
                             self.level_data['walls'].append(new_wall)
@@ -131,6 +144,14 @@ class LevelEditor:
                             self.level_data['enemies'].append(new_enemy)
                     elif self.selected_tool == 'player':
                         self.level_data['player_spawn'] = {"x": int(map_x), "y": int(map_y)}
+                    elif self.selected_tool == 'merchant': # New: Place merchant
+                        new_merchant = {"x": int(map_x), "y": int(map_y)}
+                        if new_merchant not in self.level_data['merchants']:
+                            self.level_data['merchants'].append(new_merchant)
+                    elif self.selected_tool == 'door': # New: Place door
+                        new_door = {"x": int(map_x), "y": int(map_y)}
+                        if new_door not in self.level_data['doors']:
+                            self.level_data['doors'].append(new_door)
                     elif self.selected_tool == 'erase':
                         self.erase_at_position(map_x, map_y)
 
@@ -154,6 +175,16 @@ class LevelEditor:
             enemy for enemy in self.level_data['enemies']
             if not (enemy['x'] == map_x and enemy['y'] == map_y)
         ]
+        # Erase merchants
+        self.level_data['merchants'] = [ # New: Erase merchants
+            merchant for merchant in self.level_data['merchants']
+            if not (merchant['x'] == map_x and merchant['y'] == map_y)
+        ]
+        # Erase doors
+        self.level_data['doors'] = [ # New: Erase doors
+            door for door in self.level_data['doors']
+            if not (door['x'] == map_x and door['y'] == map_y)
+        ]
         # Reset player spawn if erased
         if self.level_data['player_spawn']['x'] == map_x and self.level_data['player_spawn']['y'] == map_y:
             self.level_data['player_spawn'] = {"x": 1, "y": 1} # Default spawn
@@ -161,11 +192,22 @@ class LevelEditor:
     def draw(self):
         self.screen.fill(BLACK)
 
-        # Draw grid
-        for x in range(0, self.map_width_pixels, TILE_SIZE):
-            pygame.draw.line(self.screen, DARK_GREY, (x + self.camera_x, self.camera_y), (x + self.camera_x, self.map_height_pixels + self.camera_y))
-        for y in range(0, self.map_height_pixels, TILE_SIZE):
-            pygame.draw.line(self.screen, DARK_GREY, (self.camera_x, y + self.camera_y), (self.map_width_pixels + self.camera_x, y + self.camera_y))
+        # Draw grid for the visible area
+        # Calculate the visible world coordinates
+        visible_world_x_start = -self.camera_x
+        visible_world_y_start = -self.camera_y
+        visible_world_x_end = visible_world_x_start + SCREEN_WIDTH
+        visible_world_y_end = visible_world_y_start + SCREEN_HEIGHT
+
+        # Draw vertical grid lines
+        for x in range(visible_world_x_start - (visible_world_x_start % TILE_SIZE), visible_world_x_end + TILE_SIZE, TILE_SIZE):
+            screen_x = x + self.camera_x
+            pygame.draw.line(self.screen, DARK_GREY, (screen_x, 0), (screen_x, SCREEN_HEIGHT))
+        # Draw horizontal grid lines
+        for y in range(visible_world_y_start - (visible_world_y_start % TILE_SIZE), visible_world_y_end + TILE_SIZE, TILE_SIZE):
+            screen_y = y + self.camera_y
+            pygame.draw.line(self.screen, DARK_GREY, (0, screen_y), (SCREEN_WIDTH, screen_y))
+
 
         # Draw walls
         for wall in self.level_data['walls']:
@@ -178,7 +220,6 @@ class LevelEditor:
             pygame.draw.rect(self.screen, BROWN, (pot['x'] * TILE_SIZE + self.camera_x,
                                                   pot['y'] * TILE_SIZE + self.camera_y,
                                                   TILE_SIZE, TILE_SIZE))
-            # Draw a small 'P' to indicate pot
             text_surf = self.font.render("P", True, WHITE)
             self.screen.blit(text_surf, (pot['x'] * TILE_SIZE + self.camera_x + TILE_SIZE // 4,
                                          pot['y'] * TILE_SIZE + self.camera_y + TILE_SIZE // 4))
@@ -188,17 +229,33 @@ class LevelEditor:
             pygame.draw.rect(self.screen, RED, (enemy['x'] * TILE_SIZE + self.camera_x,
                                                 enemy['y'] * TILE_SIZE + self.camera_y,
                                                 TILE_SIZE, TILE_SIZE))
-            # Draw a small 'E' to indicate enemy
             text_surf = self.font.render("E", True, WHITE)
             self.screen.blit(text_surf, (enemy['x'] * TILE_SIZE + self.camera_x + TILE_SIZE // 4,
                                          enemy['y'] * TILE_SIZE + self.camera_y + TILE_SIZE // 4))
+
+        # Draw merchants
+        for merchant in self.level_data['merchants']: # New: Draw merchants
+            pygame.draw.rect(self.screen, PURPLE, (merchant['x'] * TILE_SIZE + self.camera_x,
+                                                   merchant['y'] * TILE_SIZE + self.camera_y,
+                                                   TILE_SIZE, TILE_SIZE))
+            text_surf = self.font.render("M", True, WHITE)
+            self.screen.blit(text_surf, (merchant['x'] * TILE_SIZE + self.camera_x + TILE_SIZE // 4,
+                                         merchant['y'] * TILE_SIZE + self.camera_y + TILE_SIZE // 4))
+
+        # Draw doors
+        for door in self.level_data['doors']: # New: Draw doors
+            pygame.draw.rect(self.screen, DARK_BROWN, (door['x'] * TILE_SIZE + self.camera_x,
+                                                 door['y'] * TILE_SIZE + self.camera_y,
+                                                 TILE_SIZE, TILE_SIZE))
+            text_surf = self.font.render("D", True, WHITE)
+            self.screen.blit(text_surf, (door['x'] * TILE_SIZE + self.camera_x + TILE_SIZE // 4,
+                                         door['y'] * TILE_SIZE + self.camera_y + TILE_SIZE // 4))
 
         # Draw player spawn
         player_spawn = self.level_data['player_spawn']
         pygame.draw.rect(self.screen, GREEN, (player_spawn['x'] * TILE_SIZE + self.camera_x,
                                               player_spawn['y'] * TILE_SIZE + self.camera_y,
                                               TILE_SIZE, TILE_SIZE))
-        # Draw a small 'S' to indicate spawn
         text_surf = self.font.render("S", True, WHITE)
         self.screen.blit(text_surf, (player_spawn['x'] * TILE_SIZE + self.camera_x + TILE_SIZE // 4,
                                      player_spawn['y'] * TILE_SIZE + self.camera_y + TILE_SIZE // 4))
@@ -209,13 +266,17 @@ class LevelEditor:
         current_tile_y = (mouse_y - self.camera_y) // TILE_SIZE * TILE_SIZE + self.camera_y
 
         if self.selected_tool == 'wall':
-            pygame.draw.rect(self.screen, CYAN, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3) # Outline
+            pygame.draw.rect(self.screen, CYAN, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
         elif self.selected_tool == 'pot':
             pygame.draw.rect(self.screen, BROWN, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
         elif self.selected_tool == 'enemy':
             pygame.draw.rect(self.screen, RED, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
         elif self.selected_tool == 'player':
             pygame.draw.rect(self.screen, GREEN, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
+        elif self.selected_tool == 'merchant': # New: Tool indicator for merchant
+            pygame.draw.rect(self.screen, PURPLE, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
+        elif self.selected_tool == 'door': # New: Tool indicator for door
+            pygame.draw.rect(self.screen, DARK_BROWN, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
         elif self.selected_tool == 'erase':
             pygame.draw.rect(self.screen, YELLOW, (current_tile_x, current_tile_y, TILE_SIZE, TILE_SIZE), 3)
 
@@ -223,7 +284,7 @@ class LevelEditor:
         # Draw UI text
         tool_text = self.font.render(f"Tool: {self.selected_tool.capitalize()}", True, WHITE)
         self.screen.blit(tool_text, (10, 10))
-        instructions_text = self.font.render("1: Wall, 2: Pot, 3: Enemy, 4: Player, E: Erase, S: Save, Arrows: Scroll, Left/Right Click: Place/Erase", True, WHITE)
+        instructions_text = self.font.render("1: Wall, 2: Pot, 3: Enemy, 4: Player, 5: Merchant, 6: Door, E: Erase, S: Save, Arrows: Scroll, Left/Right Click: Place/Erase", True, WHITE)
         self.screen.blit(instructions_text, (10, 30))
 
         pygame.display.flip()
@@ -236,6 +297,5 @@ class LevelEditor:
         pygame.quit()
 
 if __name__ == '__main__':
-    DARK_GREY = (50, 50, 50) # Define DARK_GREY for the editor tool
     editor = LevelEditor()
     editor.run()
