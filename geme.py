@@ -38,6 +38,7 @@ BROWN = (139, 69, 19)
 GOLD = (255, 215, 0)
 GREY = (128, 128, 128)
 LIGHT_GREY = (200, 200, 200)
+DARK_GREY = (50, 50, 50) # Added for screen overlays
 
 # --- Helper Functions ---
 
@@ -206,7 +207,7 @@ class Player(pygame.sprite.Sprite):
         self.health -= amount
         if self.health <= 0:
             self.health = 0
-            self.game.playing = False # Game over
+            self.game.playing = False # Game over, transition to death screen
 
     def update(self):
         """Updates player state each frame."""
@@ -347,11 +348,14 @@ class Projectile(pygame.sprite.Sprite):
             self.kill()
             
         # Check for collisions with pots
-        if pygame.sprite.spritecollide(self, self.game.pots, True):
-            # The pot is destroyed on hit by setting dokill=True
-            # The destroy logic is in Pot.destroy(), but this is simpler for projectiles
-             self.game.add_message("A pot was smashed by an arrow!")
-             self.kill()
+        # Note: spritecollide with dokill=True will remove the pot from its groups automatically.
+        # However, the Pot.destroy() method contains the loot drop logic.
+        # A more robust solution would be to call pot.destroy() on collision.
+        # For simplicity here, we'll iterate and check.
+        collided_pots = pygame.sprite.spritecollide(self, self.game.pots, False)
+        for pot in collided_pots:
+            pot.destroy() # Call the destroy method to handle loot
+            self.kill() # Kill the projectile after hitting a pot
 
 class Item(pygame.sprite.Sprite):
     """Represents a collectible item on the ground."""
@@ -407,6 +411,8 @@ class UI:
     def __init__(self, game):
         self.game = game
         self.font = pygame.font.Font(None, 30)
+        self.large_font = pygame.font.Font(None, 75) # For titles
+        self.button_font = pygame.font.Font(None, 40) # For buttons
         self.message_font = pygame.font.Font(None, 24)
         self.messages = []
 
@@ -449,6 +455,30 @@ class UI:
                 y_pos = SCREEN_HEIGHT - (len(self.messages) - i) * 25 - 10
                 surface.blit(msg_surface, (10, y_pos))
 
+    def draw_text_center(self, surface, text, font, color, y_offset=0):
+        """Helper to draw text centered on screen."""
+        text_surface = font.render(text, True, color)
+        text_rect = text_surface.get_rect(center=(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + y_offset))
+        surface.blit(text_surface, text_rect)
+
+    def draw_button(self, surface, text, rect, color, hover_color):
+        """Helper to draw a button and return if hovered/clicked."""
+        mouse_pos = pygame.mouse.get_pos()
+        clicked = False
+
+        if rect.collidepoint(mouse_pos):
+            pygame.draw.rect(surface, hover_color, rect)
+            if pygame.mouse.get_pressed()[0]:
+                clicked = True
+        else:
+            pygame.draw.rect(surface, color, rect)
+        
+        text_surface = self.button_font.render(text, True, WHITE)
+        text_rect = text_surface.get_rect(center=rect.center)
+        surface.blit(text_surface, text_rect)
+        return clicked
+
+
     def draw(self, surface):
         self.draw_player_stats(surface)
         self.draw_messages(surface)
@@ -463,7 +493,10 @@ class Game:
         pygame.display.set_caption("Top-Down Adventure")
         self.clock = pygame.time.Clock()
         self.running = True
-        self.playing = False
+        self.playing = False # True when actively playing the game
+        self.paused = False  # True when game is paused
+        self.game_over = False # True when player health is 0
+
         self.level_data = None
         self.ui = UI(self)
 
@@ -501,6 +534,8 @@ class Game:
                 Enemy(self, enemy['x'] * TILE_SIZE, enemy['y'] * TILE_SIZE)
 
         self.playing = True
+        self.paused = False # Reset pause state on new game
+        self.game_over = False # Reset game over state on new game
         self.run()
 
     def run(self):
@@ -508,19 +543,29 @@ class Game:
         while self.playing:
             self.dt = self.clock.tick(60) / 1000 # Delta time in seconds
             self.events()
-            self.update()
+            if not self.paused and not self.game_over: # Only update if not paused and not game over
+                self.update()
             self.draw()
+            
+            if self.paused: # Display pause screen if paused
+                self.show_pause_screen()
+            elif self.game_over: # Display death screen if game over
+                self.show_death_screen()
+            
+            pygame.display.flip() # Only one flip at the end of the frame
 
     def events(self):
         """Handles all game events."""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                if self.playing:
-                    self.playing = False
-                self.running = False
-            if event.type == pygame.K_ESCAPE:
                 self.playing = False
                 self.running = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    if self.playing and not self.game_over: # Only toggle pause if game is actively playing and not game over
+                        self.paused = not self.paused # Toggle pause state
+                        if self.paused: # Clear messages when pausing to avoid clutter
+                            self.ui.messages.clear() 
 
     def update(self):
         """Updates all game objects."""
@@ -546,6 +591,13 @@ class Game:
             for pot in self.pots:
                 if attack_rect.colliderect(pot.rect):
                     pot.destroy()
+        
+        # Check if player died
+        if self.player.health <= 0 and not self.game_over:
+            self.game_over = True
+            self.playing = False # Stop the main game loop updates
+            self.add_message("You have fallen!") # Inform the player
+
 
     def draw(self):
         """Draws everything to the screen."""
@@ -561,13 +613,13 @@ class Game:
             # We need to create a temporary surface to draw the semi-transparent rect
             s = pygame.Surface((attack_rect.width, attack_rect.height), pygame.SRCALPHA)
             s.fill((255, 255, 0, 128))  # Yellow, 50% transparent
-            self.screen.blit(s, self.camera.apply_rect(attack_rect))
+            self.screen.blit(s, self.camera.apply_rect(attack_rect)) # Corrected method call
 
 
         # Draw UI on top of everything
         self.ui.draw(self.screen)
         
-        pygame.display.flip()
+        # Removed pygame.display.flip() from here, moved to run()
         
     def add_message(self, text):
         """Convenience method to add a message to the UI."""
@@ -575,17 +627,95 @@ class Game:
 
     def show_start_screen(self):
         """Displays the start screen."""
-        # Placeholder for a start screen
+        # For now, directly starts a new game. You can expand this later.
         self.new()
 
-    def show_go_screen(self):
-        """Displays the game over screen."""
-        # Placeholder for a game over screen
-        pass
+    def show_pause_screen(self):
+        """Displays the pause screen."""
+        pause_screen_running = True
+        self.ui.messages.clear() # Clear any existing messages
+        self.add_message("Game Paused")
+
+        while pause_screen_running:
+            # Dim the background
+            s = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            s.fill((0, 0, 0, 150)) # Black with 150 alpha (semi-transparent)
+            self.screen.blit(s, (0, 0))
+
+            self.ui.draw_text_center(self.screen, "PAUSED", self.ui.large_font, WHITE, -100)
+
+            # Exit Button
+            exit_button_rect = pygame.Rect(
+                SCREEN_WIDTH / 2 - 100, SCREEN_HEIGHT / 2 + 50, 200, 50
+            )
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    self.playing = False
+                    pause_screen_running = False
+                    self.paused = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        pause_screen_running = False
+                        self.paused = False # Unpause the game
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    if exit_button_rect.collidepoint(event.pos):
+                        self.running = False
+                        self.playing = False
+                        pause_screen_running = False
+                        self.paused = False
+
+            if self.ui.draw_button(self.screen, "Exit Game", exit_button_rect, DARK_GREY, GREY):
+                self.running = False
+                self.playing = False
+                pause_screen_running = False
+                self.paused = False
+
+            pygame.display.flip()
+
+    def show_death_screen(self):
+        """Displays the game over/death screen."""
+        death_screen_running = True
+        
+        while death_screen_running:
+            # Dim the background
+            s = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            s.fill((0, 0, 0, 180)) # Darker black for death screen
+            self.screen.blit(s, (0, 0))
+
+            self.ui.draw_text_center(self.screen, "GAME OVER", self.ui.large_font, RED, -100)
+
+            # Respawn Button
+            respawn_button_rect = pygame.Rect(
+                SCREEN_WIDTH / 2 - 100, SCREEN_HEIGHT / 2 + 20, 200, 50
+            )
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    death_screen_running = False
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    if respawn_button_rect.collidepoint(event.pos):
+                        death_screen_running = False
+                        self.new() # Restart the game
+                        
+            if self.ui.draw_button(self.screen, "Respawn", respawn_button_rect, DARK_GREY, RED):
+                death_screen_running = False
+                self.new() # Restart the game
+
+            pygame.display.flip()
+
 # --- Main execution ---
 if __name__ == '__main__':
     g = Game()
     g.show_start_screen()
     while g.running:
-        g.show_go_screen()
+        # The show_go_screen() was intended for a simple game over.
+        # Now, the death screen logic is handled by show_death_screen().
+        # This line is no longer needed as g.playing will be False and
+        # g.run() will call show_death_screen directly.
+        # You can remove or comment out the following line if you wish.
+        # g.show_go_screen() 
+        pass # Keep the while loop running to allow restarting the game via respawn button
     pygame.quit()
