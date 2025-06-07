@@ -352,8 +352,8 @@ class Pot(pygame.sprite.Sprite):
 
     def destroy(self):
         """Handles pot destruction and loot drops."""
-        loot_options = ['arrows', 'coin', 'health_bottle'] # MODIFIED: Removed 'key'
-        weights = [0.5, 0.3, 0.2] # MODIFIED: Adjusted weights
+        loot_options = ['arrows', 'coin', 'health_bottle']
+        weights = [0.5, 0.3, 0.2]
         chosen_loot = random.choices(loot_options, weights, k=1)[0]
 
         Item(self.game, self.rect.center, chosen_loot)
@@ -388,10 +388,8 @@ class Projectile(pygame.sprite.Sprite):
         self.rect.x += self.vx
         self.rect.y += self.vy
         
-        # Kill if it goes too far off-screen (approximate)
-        # Using a fixed large boundary instead of camera rect for 'infinite' feel
-        if not (-SCREEN_WIDTH < self.rect.x < self.game.camera.width + SCREEN_WIDTH and
-                -SCREEN_HEIGHT < self.rect.y < self.game.camera.height + SCREEN_HEIGHT):
+        # MODIFIED: Kill if it goes too far off-screen, relative to camera view
+        if not self.game.camera.get_rect().inflate(200, 200).colliderect(self.rect):
             self.kill()
         
         # Check for collisions with enemies
@@ -401,7 +399,7 @@ class Projectile(pygame.sprite.Sprite):
                 enemy.take_damage(self.game.player.damage)
             self.kill()
             
-        # Check for collisions with pots (if not already handled by sword attack)
+        # Check for collisions with pots
         collided_pots = pygame.sprite.spritecollide(self, self.game.pots, False)
         for pot in collided_pots:
             pot.destroy()
@@ -487,16 +485,12 @@ class Door(pygame.sprite.Sprite):
 
 class Camera:
     """Manages the game's viewport with infinite scrolling."""
-    def __init__(self, initial_map_width, initial_map_height):
-        # We still store initial map dimensions for drawing grid/loading,
-        # but the camera itself is not bounded.
-        self.width = initial_map_width
-        self.height = initial_map_height
+    # MODIFIED: Removed map dimensions from constructor as they are no longer needed.
+    def __init__(self):
         self.camera = pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT) # Camera represents the viewport
 
     def apply(self, entity):
         """Applies the camera offset to a sprite's rect."""
-        # Calculate entity's position relative to the camera's top-left corner
         return entity.rect.move(self.camera.topleft)
 
     def apply_rect(self, rect):
@@ -505,16 +499,12 @@ class Camera:
 
     def update(self, target):
         """Updates the camera's position to follow the target."""
-        # Center the target (player) on the screen
         x = -target.rect.centerx + int(SCREEN_WIDTH / 2)
         y = -target.rect.centery + int(SCREEN_HEIGHT / 2)
-        
-        # No clamping for infinite map
         self.camera.topleft = (x, y)
 
     def get_rect(self):
         """Returns a rect representing the visible area of the world relative to world origin."""
-        # This rect defines what world coordinates are currently visible
         return pygame.Rect(-self.camera.x, -self.camera.y, SCREEN_WIDTH, SCREEN_HEIGHT)
 
 class UI:
@@ -531,7 +521,6 @@ class UI:
 
     def add_message(self, text):
         self.messages.append({'text': text, 'time': pygame.time.get_ticks()})
-        # Keep only the last 5 messages
         if len(self.messages) > 5:
             self.messages.pop(0)
 
@@ -595,7 +584,7 @@ class UI:
         
         # Stats text
         stats_text = self.font.render(
-            f"Coins: {self.game.player.coins} | Arrows: {self.game.player.arrows} | Potions: {self.game.player.health_bottles} | Keys: {self.game.player.keys}", # New: Keys
+            f"Coins: {self.game.player.coins} | Arrows: {self.game.player.arrows} | Potions: {self.game.player.health_bottles} | Keys: {self.game.player.keys}",
             True, WHITE
         )
         surface.blit(stats_text, (10, 40))
@@ -649,16 +638,13 @@ class UI:
         if not self.game.player.dialogue_active or not self.merchant_options:
             return
 
-        # Background for dialogue box
         dialogue_rect = pygame.Rect(SCREEN_WIDTH / 4, SCREEN_HEIGHT / 4, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2)
         pygame.draw.rect(surface, DARK_GREY, dialogue_rect)
         pygame.draw.rect(surface, WHITE, dialogue_rect, 3) # Border
 
-        # Dialogue text
         dialogue_prompt = self.font.render("What would you like?", True, WHITE)
         surface.blit(dialogue_prompt, (dialogue_rect.x + 20, dialogue_rect.y + 20))
 
-        # Options
         for i, option in enumerate(self.merchant_options):
             color = GOLD if i == self.selected_merchant_option else WHITE
             option_surf = self.font.render(option, True, color)
@@ -680,33 +666,28 @@ class Game:
         pygame.display.set_caption("Top-Down Adventure")
         self.clock = pygame.time.Clock()
         self.running = True
-        self.playing = False # True when actively playing the game
-        self.paused = False  # True when game is paused
-        self.game_over = False # True when player health is 0
+        self.playing = False
+        self.paused = False
+        self.game_over = False
 
         self.level_data = None
         self.ui = UI(self)
 
     def new(self):
         """Initializes a new game."""
-        # Sprite groups
         self.all_sprites = pygame.sprite.Group()
         self.walls = pygame.sprite.Group()
         self.enemies = pygame.sprite.Group()
         self.pots = pygame.sprite.Group()
         self.projectiles = pygame.sprite.Group()
         self.items = pygame.sprite.Group()
-        self.merchants = pygame.sprite.Group() # New: Merchant group
-        self.doors = pygame.sprite.Group() # New: Door group
+        self.merchants = pygame.sprite.Group()
+        self.doors = pygame.sprite.Group()
 
-        # Load level data from JSON
         self.level_data = load_level("level.json")
         
-        # Determine initial visible map size (for camera reference, not strict bounds)
-        # This will be used to initialize the camera at the spawn point
-        map_width_pixels = self.level_data['map_width'] * TILE_SIZE
-        map_height_pixels = self.level_data['map_height'] * TILE_SIZE
-        self.camera = Camera(map_width_pixels, map_height_pixels)
+        # MODIFIED: Initialize the infinite camera without map dimensions.
+        self.camera = Camera()
 
         # Create game objects based on level data
         player_spawn = self.level_data['player_spawn']
@@ -723,40 +704,38 @@ class Game:
             if enemy['type'] == 'melee':
                 Enemy(self, enemy['x'] * TILE_SIZE, enemy['y'] * TILE_SIZE)
         
-        for merchant_data in self.level_data.get('merchants', []): # New: Load merchants
+        for merchant_data in self.level_data.get('merchants', []):
             Merchant(self, merchant_data['x'] * TILE_SIZE, merchant_data['y'] * TILE_SIZE)
 
-        for door_data in self.level_data.get('doors', []): # New: Load doors
+        for door_data in self.level_data.get('doors', []):
             Door(self, door_data['x'] * TILE_SIZE, door_data['y'] * TILE_SIZE)
 
-        # MODIFIED: Load keys from level data
         for key_data in self.level_data.get('keys', []):
-            # Center the item in the tile
             item_x_pos = key_data['x'] * TILE_SIZE + (TILE_SIZE / 2)
             item_y_pos = key_data['y'] * TILE_SIZE + (TILE_SIZE / 2)
             Item(self, (item_x_pos, item_y_pos), 'key')
 
 
         self.playing = True
-        self.paused = False # Reset pause state on new game
-        self.game_over = False # Reset game over state on new game
+        self.paused = False
+        self.game_over = False
         self.run()
 
     def run(self):
         """The main game loop."""
         while self.playing:
-            self.dt = self.clock.tick(60) / 1000 # Delta time in seconds
+            self.dt = self.clock.tick(60) / 1000
             self.events()
-            if not self.paused and not self.game_over and not self.player.dialogue_active: # Only update if not paused, game over, or in dialogue
+            if not self.paused and not self.game_over and not self.player.dialogue_active:
                 self.update()
             self.draw()
             
-            if self.paused: # Display pause screen if paused
+            if self.paused:
                 self.show_pause_screen()
-            elif self.game_over: # Display death screen if game over
+            elif self.game_over:
                 self.show_death_screen()
             
-            pygame.display.flip() # Only one flip at the end of the frame
+            pygame.display.flip()
 
     def events(self):
         """Handles all game events."""
@@ -770,10 +749,9 @@ class Game:
                         self.paused = not self.paused
                         if self.paused:
                             self.ui.messages.clear()
-                            self.player.dialogue_active = False # Ensure dialogue closes on pause
+                            self.player.dialogue_active = False
                             self.ui.clear_merchant_options()
                 
-                # Handle merchant dialogue input
                 if self.player.dialogue_active:
                     self.ui.handle_merchant_input(event)
 
@@ -795,7 +773,7 @@ class Game:
             if item.type == 'arrows':
                 self.player.arrows += 5
                 self.add_message("Picked up 5 arrows.")
-            if item.type == 'key': # New: Pick up key
+            if item.type == 'key':
                 self.player.keys += 1
                 self.add_message("Picked up a mysterious key!")
         
@@ -808,20 +786,17 @@ class Game:
 
     def draw(self):
         """Draws everything to the screen."""
-        self.screen.fill(BLACK) # Background color
+        self.screen.fill(BLACK)
 
-        # Draw all sprites offset by the camera
         for sprite in self.all_sprites:
             self.screen.blit(sprite.image, self.camera.apply(sprite))
             
-        # Draw player attack animation (a simple flash)
         if self.player.attacking and self.player.equipped_item == 'sword':
             attack_rect = self.player.get_attack_rect()
             s = pygame.Surface((attack_rect.width, attack_rect.height), pygame.SRCALPHA)
-            s.fill((255, 255, 0, 128))  # Yellow, 50% transparent
+            s.fill((255, 255, 0, 128))
             self.screen.blit(s, self.camera.apply_rect(attack_rect))
 
-        # Draw UI on top of everything
         self.ui.draw(self.screen)
         
     def add_message(self, text):
@@ -837,7 +812,8 @@ class Game:
                     self.running = False
                     start_screen_running = False
                 if event.type == pygame.MOUSEBUTTONDOWN:
-                    start_screen_running = False
+                    if start_button_rect.collidepoint(event.pos):
+                         start_screen_running = False
             
             self.screen.fill(BLACK)
             self.ui.draw_text_center(self.screen, "TOP-DOWN ADVENTURE", self.ui.large_font, WHITE, -100)
@@ -850,7 +826,7 @@ class Game:
 
             pygame.display.flip()
         
-        if self.running: # Only start new game if not quitting
+        if self.running:
             self.new()
 
     def show_pause_screen(self):
@@ -878,31 +854,25 @@ class Game:
                     self.running = False
                     self.playing = False
                     pause_screen_running = False
-                    self.paused = False
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        pause_screen_running = False
-                        self.paused = False
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    pause_screen_running = False
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     if resume_button_rect.collidepoint(event.pos):
                         pause_screen_running = False
-                        self.paused = False
                     if exit_button_rect.collidepoint(event.pos):
                         self.running = False
                         self.playing = False
                         pause_screen_running = False
-                        self.paused = False
 
             if self.ui.draw_button(self.screen, "Resume", resume_button_rect, DARK_GREY, GREY):
                 pause_screen_running = False
-                self.paused = False
             
             if self.ui.draw_button(self.screen, "Exit Game", exit_button_rect, DARK_GREY, GREY):
                 self.running = False
                 self.playing = False
                 pause_screen_running = False
-                self.paused = False
-
+            
+            self.paused = pause_screen_running
             pygame.display.flip()
 
     def show_death_screen(self):
@@ -922,7 +892,6 @@ class Game:
             exit_button_rect = pygame.Rect(
                 SCREEN_WIDTH / 2 - 100, SCREEN_HEIGHT / 2 + 90, 200, 50
             )
-
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -950,6 +919,4 @@ class Game:
 if __name__ == '__main__':
     g = Game()
     g.show_start_screen()
-    while g.running:
-        pass
     pygame.quit()
