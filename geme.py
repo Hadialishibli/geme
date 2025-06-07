@@ -352,8 +352,8 @@ class Pot(pygame.sprite.Sprite):
 
     def destroy(self):
         """Handles pot destruction and loot drops."""
-        loot_options = ['arrows', 'coin', 'health_bottle', 'key'] # New: Key drop
-        weights = [0.5, 0.25, 0.15, 0.1] # Adjusted weights
+        loot_options = ['arrows', 'coin', 'health_bottle'] # MODIFIED: Removed 'key'
+        weights = [0.5, 0.3, 0.2] # MODIFIED: Adjusted weights
         chosen_loot = random.choices(loot_options, weights, k=1)[0]
 
         Item(self.game, self.rect.center, chosen_loot)
@@ -728,6 +728,13 @@ class Game:
 
         for door_data in self.level_data.get('doors', []): # New: Load doors
             Door(self, door_data['x'] * TILE_SIZE, door_data['y'] * TILE_SIZE)
+
+        # MODIFIED: Load keys from level data
+        for key_data in self.level_data.get('keys', []):
+            # Center the item in the tile
+            item_x_pos = key_data['x'] * TILE_SIZE + (TILE_SIZE / 2)
+            item_y_pos = key_data['y'] * TILE_SIZE + (TILE_SIZE / 2)
+            Item(self, (item_x_pos, item_y_pos), 'key')
 
 
         self.playing = True
